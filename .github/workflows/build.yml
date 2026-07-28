@@ -42,6 +42,13 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: src/go.mod
+          # setup-go's dependency caching looks for go.sum at the repo
+          # root by default -- go-version-file above only picks the Go
+          # version, it doesn't also redirect the cache lookup. Without
+          # this, caching silently no-ops every run ("Dependencies file is
+          # not found... Supported file pattern: go.mod") and downloads
+          # fresh each time -- harmless, just slower.
+          cache-dependency-path: src/go.sum
 
       - name: Check gofmt
         run: |
