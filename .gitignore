@@ -1,0 +1,27 @@
+# Go build artifacts
+bin/pg-guard
+bin/pg-guard-*
+bin/*.exe
+src/pg-guard
+src/*.exe
+
+# Vendored third-party jars (fetched via bin/download-postgresql-jdbc.sh)
+bin/*.jar
+
+# Go test cache
+*.test
+*.out
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets
+docker/.env
+docker/tls/

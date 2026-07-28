@@ -1,0 +1,47 @@
+# Single-node PID-1 supervision smoke test: pg-guard supervising an
+# unmodified postgres:18 image, no peer configured. Full documentation
+# (self-bootstrap, image conventions, volumes, binary build) -- see
+# README.md's "Dev/test tooling" section and docker/README.md; for the
+# two-node HA stack, see docker/docker-compose.yml.
+#
+# Run: docker compose up -d
+
+services:
+
+  pg-guard-single:
+
+    image: postgres:18
+    container_name: pg-guard-single
+    hostname: pg-guard-single
+    user: postgres
+
+    environment:
+      PG_GUARD_LOG_LEVEL: "debug"
+      PG_GUARD_LOG_FORMAT: "text"
+      PG_GUARD_SHUTDOWN_WAIT: "5s"
+      PGDATA: "/var/lib/postgresql/18/docker"
+
+    volumes:
+      - ./bin/pg-guard-linux:/pg-guard:ro
+      - pgdata:/var/lib/postgresql
+
+    entrypoint: ["/pg-guard"]
+    restart: on-failure
+    stop_grace_period: 15s
+
+    ports:
+      - "5432:5432"
+      - "8080:8080"
+      - "9100:9100"
+
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 30s
+
+volumes:
+
+  pgdata:
+    name: pgdata

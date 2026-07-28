@@ -1,0 +1,189 @@
+# Two-node PostgreSQL streaming replication + full pg-guard HA stack.
+# Full documentation (self-bootstrap, auth, volumes, healthcheck/timing rationale, etc.)
+# See README.md in this directory.
+#
+# Run: docker compose up -d, then ./verify.sh
+
+services:
+
+  pg-traveler-0:
+
+    image: postgres:18
+    container_name: pg-traveler-0
+    hostname: pg-traveler-0
+    user: postgres
+
+    environment:
+      PG_GUARD_LOG_LEVEL: "debug"
+      PG_GUARD_LOG_FORMAT: "json"
+      PG_GUARD_SHUTDOWN_WAIT: "${PG_GUARD_SHUTDOWN_WAIT:-30s}"
+      PGDATA: "/var/lib/postgresql/18/docker"
+      POSTGRES_DB: "traveler"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
+      PG_GUARD_REPL_USER: "replicator"
+      PG_GUARD_API_TOKEN: "${PG_GUARD_API_TOKEN:-}"
+      PG_GUARD_SHUTDOWN_MODE: "${PG_GUARD_SHUTDOWN_MODE:-switchover}"
+      PG_GUARD_REBOOT_GRACE_PERIOD: "${PG_GUARD_REBOOT_GRACE_PERIOD:-180s}"
+      # Testing convenience only -- PG_GUARD_BACKUP_DIR has no built-in
+      # default (see ../README.md's Backup section: pg-guard fails loud
+      # rather than silently pick a location), so on-demand "pg-guard
+      # backup"/"POST /api/backup" 500s until something is set. This default
+      # lives inside the same postgres-data-N volume as PGDATA purely for
+      # zero-setup convenience here -- a real deployment should point this
+      # at genuinely separate storage, since anything sharing PGDATA's
+      # volume is lost right along with PGDATA if that volume/disk ever is.
+      PG_GUARD_BACKUP_DIR: "${PG_GUARD_BACKUP_DIR:-/var/lib/postgresql/pg-guard-backups}"
+      # PG_GUARD_METRICS_MODE default ("endpoint") matches pg-guard's own
+      # default -- unchanged behavior unless overridden in .env. Textfile
+      # writes to PG_GUARD_TEXTFILE_DIR, which does get a real default here
+      # so switching PG_GUARD_METRICS_MODE to "textfile"/"both" in .env
+      # works immediately with nothing else to configure. Under
+      # /tmp/pg-guard/, not PGDATA's volume -- same root pg-guard's own TLS
+      # cert/key staging and initdb pwfile use internally (tempdir.go), so
+      # everything pg-guard writes outside of PGDATA lives under one common
+      # parent; a single tmpfs mount at /tmp/pg-guard (or /tmp itself)
+      # would cover all of it. Nothing is lost by this not surviving a
+      # restart either -- it's regenerated every PG_GUARD_TEXTFILE_INTERVAL.
+      # writeTextfile (textfile.go) creates the directory itself if it
+      # doesn't already exist.
+      PG_GUARD_METRICS_MODE: "${PG_GUARD_METRICS_MODE:-endpoint}"
+      PG_GUARD_TEXTFILE_DIR: "${PG_GUARD_TEXTFILE_DIR:-/tmp/pg-guard/metrics}"
+      # TLS for the API listener (:8080), peer-to-peer calls, AND Postgres's
+      # own connections (pg-guard adds ssl_cert_file/ssl_key_file/
+      # ssl_ca_file automatically once these are set -- see ../README.md's
+      # TLS section) -- unset by default (plain HTTP, today's behavior).
+      # ./generate-certs.sh makes a local test CA + leaf cert covering both
+      # node names + localhost, mounted below at /run/secrets/tls; both
+      # nodes point at the identical leaf cert/CA, symmetric setup.
+      PG_GUARD_SSL_CERT_FILE: "${PG_GUARD_SSL_CERT_FILE:-}"
+      PG_GUARD_SSL_KEY_FILE: "${PG_GUARD_SSL_KEY_FILE:-}"
+      PG_GUARD_SSL_CA_FILE: "${PG_GUARD_SSL_CA_FILE:-}"
+      PG_GUARD_MTLS_REQUIRE: "${PG_GUARD_MTLS_REQUIRE:-}"
+      # For genuinely extra postgres args unrelated to TLS -- see above for
+      # why TLS itself isn't configured through this.
+      PG_GUARD_EXTRA_ARGS: "${PG_GUARD_EXTRA_ARGS:-}"
+
+    volumes:
+      - ../bin/pg-guard-linux:/pg-guard:ro
+      - postgres-data-0:/var/lib/postgresql
+      - ./tls:/run/secrets/tls:ro
+
+    # Everything pg-guard itself stages under /tmp/pg-guard (TLS cert/key
+    # copies, the initdb password file, and -- if PG_GUARD_METRICS_MODE is
+    # textfile/both -- pg-guard.prom) is regenerated on every startup or
+    # refresh cycle, never something that needs to survive a restart.
+    # Backing all of /tmp with tmpfs means none of it ever touches real
+    # disk at all, not even briefly -- also covers any scratch space
+    # pg_basebackup/initdb/psql use on their own (invoked via docker
+    # compose exec).
+    tmpfs:
+      - /tmp
+
+    entrypoint: ["/pg-guard"]
+    restart: on-failure
+    # Must exceed the true worst-case coordinated-shutdown budget (see
+    # docker/README.md's "Shutdown timing" section): isInRecovery check (3s)
+    # + fetchPeerStatus (2s) + stopLocal (PG_GUARD_SHUTDOWN_WAIT=30s + 5s
+    # kill-confirm) + requestPeerPromote (up to 70s -- pg_promote() can
+    # legitimately take that long) + confirm-poll (10s) = ~120s worst case.
+    stop_grace_period: 150s
+
+    ports:
+      - "5432:5432"
+      - "8080:8080"   # plain HTTP -- only listening when TLS is off
+      - "8443:8443"   # TLS -- only listening when TLS is on (see ../README.md's TLS section); both mapped unconditionally so toggling TLS in .env never requires touching this file
+      - "9100:9100"
+
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 150s
+
+  pg-traveler-1:
+
+    image: postgres:18
+    container_name: pg-traveler-1
+    hostname: pg-traveler-1
+    user: postgres
+
+    environment:
+      PG_GUARD_LOG_LEVEL: "debug"
+      PG_GUARD_LOG_FORMAT: "json"
+      PG_GUARD_SHUTDOWN_WAIT: "${PG_GUARD_SHUTDOWN_WAIT:-30s}"
+      PGDATA: "/var/lib/postgresql/18/docker"
+      POSTGRES_DB: "traveler"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-}"
+      PG_GUARD_REPL_USER: "replicator"
+      PG_GUARD_API_TOKEN: "${PG_GUARD_API_TOKEN:-}"
+      PG_GUARD_SHUTDOWN_MODE: "${PG_GUARD_SHUTDOWN_MODE:-switchover}"
+      PG_GUARD_REBOOT_GRACE_PERIOD: "${PG_GUARD_REBOOT_GRACE_PERIOD:-180s}"
+      # Testing convenience only -- PG_GUARD_BACKUP_DIR has no built-in
+      # default (see ../README.md's Backup section: pg-guard fails loud
+      # rather than silently pick a location), so on-demand "pg-guard
+      # backup"/"POST /api/backup" 500s until something is set. This default
+      # lives inside the same postgres-data-N volume as PGDATA purely for
+      # zero-setup convenience here -- a real deployment should point this
+      # at genuinely separate storage, since anything sharing PGDATA's
+      # volume is lost right along with PGDATA if that volume/disk ever is.
+      PG_GUARD_BACKUP_DIR: "${PG_GUARD_BACKUP_DIR:-/var/lib/postgresql/pg-guard-backups}"
+      # PG_GUARD_METRICS_MODE default ("endpoint") matches pg-guard's own
+      # default -- unchanged behavior unless overridden in .env. Textfile
+      # writes to PG_GUARD_TEXTFILE_DIR, which does get a real default here
+      # so switching PG_GUARD_METRICS_MODE to "textfile"/"both" in .env
+      # works immediately with nothing else to configure. Under
+      # /tmp/pg-guard/, not PGDATA's volume -- same root pg-guard's own TLS
+      # cert/key staging and initdb pwfile use internally (tempdir.go), so
+      # everything pg-guard writes outside of PGDATA lives under one common
+      # parent; a single tmpfs mount at /tmp/pg-guard (or /tmp itself)
+      # would cover all of it. Nothing is lost by this not surviving a
+      # restart either -- it's regenerated every PG_GUARD_TEXTFILE_INTERVAL.
+      # writeTextfile (textfile.go) creates the directory itself if it
+      # doesn't already exist.
+      PG_GUARD_METRICS_MODE: "${PG_GUARD_METRICS_MODE:-endpoint}"
+      PG_GUARD_TEXTFILE_DIR: "${PG_GUARD_TEXTFILE_DIR:-/tmp/pg-guard/metrics}"
+      # See pg-traveler-0's TLS comment above -- same settings, same
+      # mounted cert, symmetric on both nodes.
+      PG_GUARD_SSL_CERT_FILE: "${PG_GUARD_SSL_CERT_FILE:-}"
+      PG_GUARD_SSL_KEY_FILE: "${PG_GUARD_SSL_KEY_FILE:-}"
+      PG_GUARD_SSL_CA_FILE: "${PG_GUARD_SSL_CA_FILE:-}"
+      PG_GUARD_MTLS_REQUIRE: "${PG_GUARD_MTLS_REQUIRE:-}"
+      PG_GUARD_EXTRA_ARGS: "${PG_GUARD_EXTRA_ARGS:-}"
+
+    volumes:
+      - ../bin/pg-guard-linux:/pg-guard:ro
+      - postgres-data-1:/var/lib/postgresql
+      - ./tls:/run/secrets/tls:ro
+
+    # See pg-traveler-0's tmpfs comment above -- same reasoning, symmetric
+    # on both nodes.
+    tmpfs:
+      - /tmp
+
+    entrypoint: ["/pg-guard"]
+    restart: on-failure
+    # See pg-traveler-0's stop_grace_period comment above -- same worst-case
+    # budget applies symmetrically to both nodes.
+    stop_grace_period: 150s
+
+    ports:
+      - "5433:5432"
+      - "8081:8080"   # plain HTTP -- only listening when TLS is off
+      - "8444:8443"   # TLS -- only listening when TLS is on -- see pg-traveler-0's comment above
+      - "9101:9100"
+
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 150s
+
+volumes:
+
+  postgres-data-0:
+    name: postgres-data-0
+  postgres-data-1:
+    name: postgres-data-1
+

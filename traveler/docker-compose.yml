@@ -1,0 +1,70 @@
+# Two simple containers for testing PgTravelerProbe against a real
+# primary/standby pair -- no pg-guard, no build step, no separate init
+# container. Just the plain official image, its own docker-entrypoint.sh
+# bootstrap (extended via /docker-entrypoint-initdb.d for the primary, and
+# a small custom entrypoint for the standby's pg_basebackup step -- the
+# vanilla entrypoint has no "clone from a peer" mode of its own).
+#
+# For pg-guard's own supervisor verification, see docker-compose.yml and
+# docker/ at the repo root instead -- this is unrelated to that.
+#
+# Data lives in named Docker volumes (postgres-data-0, postgres-data-1),
+# named by node ordinal -- -0 starts as primary and -1 as standby, but that
+# can flip (switchover, failover), and the volume follows the node, not
+# whichever role it happens to hold right now. Not a bind mount: a bind
+# mount under the repo hits real permission trouble when run from WSL2
+# against a Windows-drive path (drvfs has limited POSIX chmod support, and
+# the container's postgres UID won't match whatever UID owns the host
+# directory) -- a named volume sidesteps all of that.
+
+services:
+  pg-traveler-0:
+    image: postgres:18
+    container_name: pg-traveler-0
+    hostname: pg-traveler-0
+    restart: always
+
+    environment:
+      POSTGRES_DB: traveler
+      POSTGRES_USER: traveler
+      POSTGRES_PASSWORD: domino4ever
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres-data-0:/var/lib/postgresql
+      - ./init-primary.sh:/docker-entrypoint-initdb.d/init-primary.sh:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traveler"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pg-traveler-1:
+    image: postgres:18
+    container_name: pg-traveler-1
+    hostname: pg-traveler-1
+    restart: always
+    depends_on:
+      pg-traveler-0:
+        condition: service_healthy
+
+    environment:
+      POSTGRES_DB: traveler
+      POSTGRES_USER: traveler
+      POSTGRES_PASSWORD: domino4ever
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - postgres-data-1:/var/lib/postgresql
+      - ./init-standby.sh:/init-standby.sh:ro
+
+    entrypoint: ["/init-standby.sh"]
+
+volumes:
+  postgres-data-0: {}
+  postgres-data-1: {}

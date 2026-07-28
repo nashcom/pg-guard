@@ -1,0 +1,83 @@
+name: build
+
+# Linux-only for now -- deliberately not building/testing the Windows
+# target here yet (native Windows Service deployment is a secondary
+# platform; Docker/Linux is the actual deployment target this whole test
+# suite -- docker-compose.yml, verify.sh, etc. -- exercises). Extending to
+# a Windows job later is a small addition (add windows-latest to a
+# strategy.matrix, or a second job), not a redesign.
+
+on:
+  push:
+  pull_request:
+  # Manual "Run workflow" button in the Actions tab -- for re-running a
+  # build/vet check on demand without needing a dummy commit, or (if
+  # dispatched against an existing tag ref specifically, via the branch/tag
+  # picker in that button's UI) to redo the release step below.
+  workflow_dispatch:
+
+# contents: write only actually matters for the release step, which is
+# itself gated to tag pushes below -- kept at workflow scope since there's
+# only the one job today, not because every step needs it.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # fetch-depth: 0 -- a shallow checkout (the default) has no tag
+          # history, which breaks build.sh's version embedding entirely:
+          # `git describe` can't see v0.1.0 (or any tag) without it, and
+          # silently falls back to a bare commit hash instead -- exactly
+          # the "dev"/wrong-version class of issue this project's own
+          # build.sh was debugged against building it. Full history avoids
+          # that regardless of how many commits/tags exist.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: src/go.mod
+
+      - name: Check gofmt
+        run: |
+          cd src
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: cd src && go vet ./...
+
+      - name: Build
+        # Runs build.sh as-is (both platforms -- see build.sh's own header
+        # for why: cross-compiling the Windows target too is cheap and
+        # catches a Windows-specific build break even before that platform
+        # has its own dedicated CI job) -- only the Linux binary gets
+        # published (as a build artifact on every run, and attached to the
+        # release below on a tag push), per this workflow's current scope.
+        run: ./build.sh
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: pg-guard-linux
+          path: bin/pg-guard-linux
+          retention-days: 30
+
+      - name: Create release
+        # Only on an actual version tag push (or a workflow_dispatch run
+        # manually pointed at one via the picker) -- never on a plain
+        # branch push or a PR, both of which have a non-tag github.ref.
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: bin/pg-guard-linux
+          generate_release_notes: true

@@ -1,0 +1,8 @@
+# Normalize every text file to LF on checkin. This project is developed
+# on Windows (Git for Windows), but .sh scripts run inside Linux
+# containers -- a CRLF shebang line ("#!/bin/bash\r") fails to exec at
+# all. text=auto lets git decide text vs. binary per file; eol=lf forces
+# LF for whatever it decides is text, including .cmd (cmd.exe on any
+# modern Windows tolerates bare LF fine, and one universal rule is
+# simpler than carving out a CRLF exception for no real benefit).
+* text=auto eol=lf
