@@ -237,7 +237,7 @@ sequenceDiagram
     P->>S: POST /api/promote?force=true
     S->>S: promote
     P->>S: poll GET /status (confirm peer became primary, up to 10s)
-    P->>P: exit (0 for shutdown; sentinel restart code for switchover)
+    P->>P: exit (0 for shutdown, sentinel restart code for switchover)
 ```
 
 No in-process "restart the child" capability was needed for this: pg-guard's
