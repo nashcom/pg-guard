@@ -78,25 +78,6 @@ check()
 psql0() { docker compose exec -T pg-traveler-0 psql -U postgres -d postgres -tAc "$1"; }
 psql1() { docker compose exec -T pg-traveler-1 psql -U postgres -d postgres -tAc "$1"; }
 
-# Read straight from .env, same as test_roundtrip.sh -- verify.sh itself
-# never hits the API port (psql/pg_isready above go through "docker compose
-# exec", not the network), but reporting this still tells you which mode
-# Postgres itself came up in, since PG_GUARD_SSL_* also switches on
-# ssl=on/ssl_cert_file/ssl_key_file/ssl_ca_file for Postgres's own listener
-# (see ../README.md's TLS section), not just pg-guard's API port.
-tls_enabled()  { [ -f .env ] && grep -qE '^PG_GUARD_SSL_CERT_FILE=.+' .env; }
-mtls_required() { [ -f .env ] && grep -qE '^PG_GUARD_MTLS_REQUIRE=true' .env; }
-
-if tls_enabled; then
-  if mtls_required; then
-    info "TLS: enabled, mutual TLS required (PG_GUARD_MTLS_REQUIRE=true in .env)"
-  else
-    info "TLS: enabled (PG_GUARD_SSL_CERT_FILE set in .env)"
-  fi
-else
-  info "TLS: disabled (plain HTTP) -- set PG_GUARD_SSL_CERT_FILE/PG_GUARD_SSL_KEY_FILE in .env to test with TLS"
-fi
-
 header "liveness"
 
 check "pg-traveler-0 is ready" docker compose exec -T pg-traveler-0 pg_isready -U postgres
@@ -144,9 +125,9 @@ fi
 
 
 header "RESULTS"
-echo "Passed  : $PASS"
-echo "Warnings: $WARNINGS"
-echo "Failures: $FAILURES"
+printf "Passed  : %3d\n" "$PASS"
+printf "Warnings: %3d\n" "$WARNINGS"
+printf "Failures: %3d\n" "$FAILURES"
 echo
 
 [ "$FAILURES" -eq 0 ]

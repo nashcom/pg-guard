@@ -138,6 +138,12 @@ metrics_port_of_service()
 tls_enabled()  { [ -f .env ] && grep -qE '^PG_GUARD_SSL_CERT_FILE=.+' .env; }
 mtls_required() { [ -f .env ] && grep -qE '^PG_GUARD_MTLS_REQUIRE=true' .env; }
 
+# api_token: same .env-reading pattern as hatest.sh's PASSWORD -- empty if
+# PG_GUARD_API_TOKEN isn't set, meaning the API listener has no auth
+# requirement and curl_api below sends no Authorization header, unchanged
+# from before this existed.
+api_token() { [ -f .env ] && grep -E '^PG_GUARD_API_TOKEN=' .env | tail -1 | cut -d= -f2-; }
+
 api_url()
 {
   local service="$1" path="$2" scheme="http"
@@ -150,7 +156,10 @@ api_url()
 # actually proves the whole chain works (cert loaded, CA trusted, handshake
 # succeeds) -- not just that the plain-HTTP fallback still does. Presents
 # this node's own cert too when PG_GUARD_MTLS_REQUIRE=true, since the peer
-# would otherwise reject the connection at the handshake.
+# would otherwise reject the connection at the handshake. Attaches the
+# bearer token too when PG_GUARD_API_TOKEN is set -- same header
+# remotecli.go attaches automatically for the CLI path (pg-guard promote,
+# etc.); this proves the direct-HTTP path enforces/accepts it identically.
 curl_api()
 {
   local service="$1" path="$2"
@@ -159,6 +168,8 @@ curl_api()
     extra+=(--cacert tls/ca.crt)
     mtls_required && extra+=(--cert tls/tls.crt --key tls/tls.key)
   fi
+  local token; token="$(api_token)"
+  [ -n "$token" ] && extra+=(-H "Authorization: Bearer $token")
   curl -s -o /tmp/roundtrip-resp.json -w '%{http_code}' "${extra[@]}" -X POST "$(api_url "$service" "$path")"
 }
 
@@ -270,6 +281,12 @@ if tls_enabled; then
   fi
 else
   info "TLS: disabled (plain HTTP) -- set PG_GUARD_SSL_CERT_FILE/PG_GUARD_SSL_KEY_FILE in .env to test with TLS"
+fi
+
+if [ -n "$(api_token)" ]; then
+  info "API token: required (PG_GUARD_API_TOKEN set in .env) -- curl_api sends it"
+else
+  info "API token: not required -- set PG_GUARD_API_TOKEN in .env to test with it"
 fi
 
 info "Tearing down any previous stack..."
@@ -386,10 +403,10 @@ done
 rm -f /tmp/roundtrip-resp.json
 
 header "RESULTS"
-echo "Passed  : $PASS"
-echo "Warnings: $WARNINGS"
-echo "Failures: $FAILURES"
-echo "Runtime : $SECONDS seconds"
+printf "Passed  : %3d\n" "$PASS"
+printf "Warnings: %3d\n" "$WARNINGS"
+printf "Failures: %3d\n" "$FAILURES"
+printf "Runtime : %3d seconds\n" "$SECONDS"
 echo
 
 [ "$FAILURES" -eq 0 ]

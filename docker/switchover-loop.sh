@@ -106,6 +106,9 @@ role_of_service()
 tls_enabled()  { [ -f .env ] && grep -qE '^PG_GUARD_SSL_CERT_FILE=.+' .env; }
 mtls_required() { [ -f .env ] && grep -qE '^PG_GUARD_MTLS_REQUIRE=true' .env; }
 
+# api_token: see test_roundtrip.sh's identical helper.
+api_token() { [ -f .env ] && grep -E '^PG_GUARD_API_TOKEN=' .env | tail -1 | cut -d= -f2-; }
+
 port_of_service()
 {
   if tls_enabled; then
@@ -144,6 +147,8 @@ curl_api()
     extra+=(--cacert tls/ca.crt)
     mtls_required && extra+=(--cert tls/tls.crt --key tls/tls.key)
   fi
+  local token; token="$(api_token)"
+  [ -n "$token" ] && extra+=(-H "Authorization: Bearer $token")
   curl -s -o /tmp/switchover-loop-resp.json -w '%{http_code}' "${extra[@]}" -X POST "$(api_url "$service" "$path")"
 }
 
@@ -205,13 +210,24 @@ wait_for_restart_count_above()
 summary()
 {
   header "RESULTS"
-  echo "Cycles OK    : $CYCLES_OK"
-  echo "Cycles failed: $CYCLES_FAILED"
-  echo "Runtime      : $SECONDS seconds"
+  printf "Cycles OK    : %3d\n" "$CYCLES_OK"
+  printf "Cycles failed: %3d\n" "$CYCLES_FAILED"
+  printf "Runtime      : %3d seconds\n" "$SECONDS"
   echo
   rm -f /tmp/switchover-loop-resp.json
 }
 trap summary EXIT
+
+if tls_enabled; then
+  if mtls_required; then
+    info "TLS: enabled, mutual TLS required (PG_GUARD_MTLS_REQUIRE=true in .env)"
+  else
+    info "TLS: enabled (PG_GUARD_SSL_CERT_FILE set in .env)"
+  fi
+else
+  info "TLS: disabled (plain HTTP)"
+fi
+[ -n "$(api_token)" ] && info "API token: required (PG_GUARD_API_TOKEN set in .env) -- curl_api sends it" || info "API token: not required"
 
 if [ "$COUNT" -eq 0 ]; then
   info "running until Ctrl+C (interval ${INTERVAL_SEC}s between cycles)"

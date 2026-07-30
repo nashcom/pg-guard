@@ -27,7 +27,7 @@ services:
       # Testing default only -- see README.md's Backup default section.
       PG_GUARD_BACKUP_DIR: "${PG_GUARD_BACKUP_DIR:-/var/lib/postgresql/pg-guard-backups}"
       # Persists restart stats -- see README.md's "/tmp is tmpfs" section.
-      PG_GUARD_STATS_FILE: "${PG_GUARD_STATS_FILE:-/var/lib/postgresql/pg-guard-state.json}"
+      PG_GUARD_STATE_FILE: "${PG_GUARD_STATE_FILE:-/var/lib/postgresql/pg-guard-state.json}"
       # Textfile collector default -- see README.md's "/tmp is tmpfs" section.
       PG_GUARD_METRICS_MODE: "${PG_GUARD_METRICS_MODE:-endpoint}"
       PG_GUARD_TEXTFILE_DIR: "${PG_GUARD_TEXTFILE_DIR:-/tmp/pg-guard/metrics}"
@@ -88,7 +88,7 @@ services:
       # Testing default only -- see README.md's Backup default section.
       PG_GUARD_BACKUP_DIR: "${PG_GUARD_BACKUP_DIR:-/var/lib/postgresql/pg-guard-backups}"
       # Persists restart stats -- see README.md's "/tmp is tmpfs" section.
-      PG_GUARD_STATS_FILE: "${PG_GUARD_STATS_FILE:-/var/lib/postgresql/pg-guard-state.json}"
+      PG_GUARD_STATE_FILE: "${PG_GUARD_STATE_FILE:-/var/lib/postgresql/pg-guard-state.json}"
       # See pg-traveler-0's textfile comment above -- same defaults.
       PG_GUARD_METRICS_MODE: "${PG_GUARD_METRICS_MODE:-endpoint}"
       PG_GUARD_TEXTFILE_DIR: "${PG_GUARD_TEXTFILE_DIR:-/tmp/pg-guard/metrics}"

@@ -70,7 +70,7 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 	}
 
 	startReaper()
-	initPersistentStats(m.cfg)
+	initPersistentState(m.cfg)
 	sup := newSupervisor(m.cfg)
 
 	// See runInteractive's (main.go) matching comment: the metrics/API
@@ -120,7 +120,7 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 			currentChild.Store(nil)
 			postgresRunning.Store(false)
 			recordPostgresCrash()
-			persistStats(m.cfg)
+			persistState(m.cfg)
 
 			// Same crash-restart budget as main.go's runInteractive --
 			// recordCrashAndCheckLimit is defined in main.go with no build
@@ -146,7 +146,7 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 			}
 
 			incrementPostgresRestarts()
-			persistStats(m.cfg)
+			persistState(m.cfg)
 			startPostgres(m.cfg, sup)
 			if currentChild.Load() == nil {
 				logError("crash-restart failed to bring postgres back up -- exiting")

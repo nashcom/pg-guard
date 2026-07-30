@@ -123,11 +123,11 @@ type Config struct {
 	PostgresRestartWindow  time.Duration // PG_GUARD_POSTGRES_RESTART_WINDOW
 	PostgresRestartBackoff time.Duration // PG_GUARD_POSTGRES_RESTART_BACKOFF
 
-	// StatsFile, if set, persists pg-guard start count / postgres restart
+	// StateFile, if set, persists pg-guard start count / postgres restart
 	// count / last crash timestamp across pg-guard restarts (see
-	// statspersist.go) -- unset (the default) means those stay in-memory
+	// statepersist.go) -- unset (the default) means those stay in-memory
 	// only, same as every other counter in this codebase.
-	StatsFile string // PG_GUARD_STATS_FILE
+	StateFile string // PG_GUARD_STATE_FILE
 }
 
 // varDef documents one environment variable: its name, default value, and
@@ -182,7 +182,7 @@ var varDefs = []varDef{
 	{"PG_GUARD_POSTGRES_RESTART_LIMIT", "5", "max automatic in-process restarts of a crashed postgres within PG_GUARD_POSTGRES_RESTART_WINDOW before pg-guard gives up and exits instead (letting Docker/the OS handle recovery); 0 disables in-process crash-restart entirely -- see Automatic Restart"},
 	{"PG_GUARD_POSTGRES_RESTART_WINDOW", "10m", "rolling window PG_GUARD_POSTGRES_RESTART_LIMIT is counted over"},
 	{"PG_GUARD_POSTGRES_RESTART_BACKOFF", "5s", "fixed delay before each automatic crash-restart attempt"},
-	{"PG_GUARD_STATS_FILE", "(unset)", "path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means these stay in-memory only -- see Automatic Restart"},
+	{"PG_GUARD_STATE_FILE", "(unset)", "path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means these stay in-memory only -- see Automatic Restart"},
 }
 
 // envOrDefault returns the environment variable value or a default.
@@ -504,7 +504,7 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("PG_GUARD_POSTGRES_RESTART_BACKOFF must be 0 or greater")
 	}
 
-	cfg.StatsFile = os.Getenv("PG_GUARD_STATS_FILE")
+	cfg.StateFile = os.Getenv("PG_GUARD_STATE_FILE")
 
 	return cfg, nil
 }

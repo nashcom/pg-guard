@@ -191,7 +191,7 @@ These are read as-is -- `pg-guard` never redefines what Postgres already owns.
 | `PG_GUARD_POSTGRES_RESTART_LIMIT` | max automatic in-process restarts of a crashed postgres within `PG_GUARD_POSTGRES_RESTART_WINDOW` before pg-guard gives up and exits instead; `0` disables in-process crash-restart entirely -- see Automatic Restart | `5` |
 | `PG_GUARD_POSTGRES_RESTART_WINDOW` | rolling window `PG_GUARD_POSTGRES_RESTART_LIMIT` is counted over | `10m` |
 | `PG_GUARD_POSTGRES_RESTART_BACKOFF` | fixed delay before each automatic crash-restart attempt | `5s` |
-| `PG_GUARD_STATS_FILE` | path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means in-memory only -- see Automatic Restart | unset |
+| `PG_GUARD_STATE_FILE` | path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means in-memory only -- see Automatic Restart | unset |
 | `PG_GUARD_LOG_LEVEL` | `error`\|`warn`\|`info`\|`debug` | `info` |
 | `PG_GUARD_LOG_FORMAT` | `json` \| `text` | `json` |
 | `PG_GUARD_LOG_FILE` | log file path | unset (stderr); required in Windows Service mode, which has no console |
@@ -348,7 +348,7 @@ liveness/readiness/monitoring surfaces polled by more than just the peer
 |----------|----------------|-------------|
 | `GET /health`             | API + metrics | `200` if the process is up (no DB check). |
 | `GET /ready`              | API + metrics | `200` if a DB ping succeeds, else `503`. |
-| `GET /status`             | API + metrics | JSON: `version`/`commit`/`build_date` (see version below), role (`primary`/`standby`/`unknown`), postgres reachable, peer reachable + host, replication lag, server version, `shutdown_in_progress`/`switchover_in_progress`, `maintenance_active`/`role_before_maintenance`, `shutdown_mode` (`PG_GUARD_SHUTDOWN_MODE`), `failover_mode` (`PG_GUARD_FAILOVER_MODE`), `failover_timeout_seconds` (`PG_GUARD_FAILOVER_TIMEOUT` -- how long the peer must be unhealthy before automatic failover promotes), `failover_countdown_active`/`failover_countdown_remaining_seconds` (live countdown while the peer is currently being tracked as unreachable), `reboot_grace_period_seconds` (`PG_GUARD_REBOOT_GRACE_PERIOD`), `reboot_suppress_active`, `reboot_suppress_remaining_seconds` (see Shutdown Modes), `tls_enabled`/`mtls_required` (see TLS), `metrics_mode` (`PG_GUARD_METRICS_MODE`), `textfile_dir`/`textfile_interval_seconds` (`PG_GUARD_TEXTFILE_DIR`/`PG_GUARD_TEXTFILE_INTERVAL` -- `textfile_dir` only present when set, see Metrics), `backup_enabled` (`PG_GUARD_BACKUP_ENABLED`), `backup_in_progress`, `last_backup_timestamp_seconds`/`last_backup_duration_seconds` (most recent *successful* backup, 0 if none this run), `last_backup_attempt_ok`/`last_backup_attempt_error`/`last_backup_attempt_timestamp_seconds` (most recent *attempt*, success or failure -- advances even when backups are currently failing, unlike the success-only fields; `last_backup_attempt_error` only present when the last attempt failed -- see Backup; cumulative counts like `backups_total` stay `/metrics`-only, matching `promotions_total`/`rejoins_total`). |
+| `GET /status`             | API + metrics | JSON: `version`/`commit`/`build_date` (see version below), role (`primary`/`standby`/`unknown`), postgres reachable, peer reachable + host, replication lag, server version, `shutdown_in_progress`/`switchover_in_progress`, `maintenance_active`/`role_before_maintenance`, `shutdown_mode` (`PG_GUARD_SHUTDOWN_MODE`), `failover_mode` (`PG_GUARD_FAILOVER_MODE`), `failover_timeout_seconds` (`PG_GUARD_FAILOVER_TIMEOUT` -- how long the peer must be unhealthy before automatic failover promotes), `failover_countdown_active`/`failover_countdown_remaining_seconds` (live countdown while the peer is currently being tracked as unreachable), `reboot_grace_period_seconds` (`PG_GUARD_REBOOT_GRACE_PERIOD`), `reboot_suppress_active`, `reboot_suppress_remaining_seconds` (see Shutdown Modes), `tls_enabled`/`mtls_required` (see TLS), `api_token_required` (see Authentication), `metrics_mode` (`PG_GUARD_METRICS_MODE`), `textfile_dir`/`textfile_interval_seconds` (`PG_GUARD_TEXTFILE_DIR`/`PG_GUARD_TEXTFILE_INTERVAL` -- `textfile_dir` only present when set, see Metrics), `backup_enabled` (`PG_GUARD_BACKUP_ENABLED`), `backup_in_progress`, `last_backup_timestamp_seconds`/`last_backup_duration_seconds` (most recent *successful* backup, 0 if none this run), `last_backup_attempt_ok`/`last_backup_attempt_error`/`last_backup_attempt_timestamp_seconds` (most recent *attempt*, success or failure -- advances even when backups are currently failing, unlike the success-only fields; `last_backup_attempt_error` only present when the last attempt failed -- see Backup; cumulative counts like `backups_total` stay `/metrics`-only, matching `promotions_total`/`rejoins_total`). |
 | `GET /metrics`            | API + metrics | See Metrics below. `404` if `PG_GUARD_METRICS_MODE` is `textfile` (not `endpoint`/`both`). |
 | `POST /api/promote`       | API only | `SELECT pg_promote()`, guarded: refuses with `409` if the peer is reachable and reports itself primary (the split-brain this guard exists to prevent), unless `?force=true`. |
 | `POST /api/shutdown`      | API only | Behavior depends on `PG_GUARD_SHUTDOWN_MODE` -- see Shutdown Modes. `switchover` (default): coordinated handover per `PG_GUARD_SHUTDOWN_POLICY` (see [`ARCHITECTURE.md`](ARCHITECTURE.md)'s Coordinated Shutdown section), exits `0` on success. `reboot`: notifies the peer to suppress failover instead of promoting it, exits with the switchover sentinel code. `409` if refused/fails either way. |
@@ -416,7 +416,9 @@ configure at all, by design (see TLS above).
   Bearer <token>` (constant-time compared -- `401` on mismatch). Both nodes
   share the same value (like `PG_GUARD_REPL_USER`); `requestPeerPromote`
   (`peer.go`) attaches it automatically when calling the peer's own
-  `/api/promote`.
+  `/api/promote`. Visible on `GET /status` as `api_token_required` (the
+  token itself is never exposed) -- deliberately `/status`-only, not also a
+  `/metrics` gauge.
 - **`PG_GUARD_PEER_VERIFY`** (`off`\|`ip`\|`dns`\|`both`): additionally
   requires the caller's address to resolve-match `PG_GUARD_PEER_HOST`
   (`403` otherwise). `ip` forward-resolves `PeerHost` and compares against
@@ -669,27 +671,51 @@ are also on `GET /status` as `last_postgres_crash_timestamp_seconds`,
 
 The metrics above are in-memory, same as every other counter in this
 codebase -- they reset to 0 every time pg-guard itself restarts (container
-restart, redeploy, host reboot), not just when postgres crashes. Setting
-`PG_GUARD_STATS_FILE` to a path on durable storage persists three of them
-across that restart instead: `postgres_ha_pg_guard_starts_total` (new --
-counts pg-guard process starts for any reason, the "how many times has
-this node come back from scratch" stat), `postgres_ha_postgres_restarts_total`,
-and `postgres_ha_postgres_last_crash_timestamp_seconds`. The crash-restart
-budget itself (`PG_GUARD_POSTGRES_RESTART_LIMIT`/`WINDOW`) is deliberately
-**not** persisted -- that enforcement stays in-memory and resets fresh on
-every pg-guard restart, unchanged. Unset (the default) means all of this
-stays exactly as before: in-memory only. A missing or corrupt stats file
-is never fatal -- pg-guard just starts the counters at 0 again.
+restart, redeploy, host reboot), not just when postgres crashes. This
+matters most for `last_backup_timestamp_seconds`: a routine restart
+resetting it to 0 would make an "alert if no backup in N hours" rule fire
+a false positive for up to a full `PG_GUARD_BACKUP_INTERVAL`, purely
+because pg-guard bounced, not because backups actually stopped.
 
-`PG_GUARD_STATS_FILE` itself is a small JSON file (`statspersist.go`),
-written atomically (temp file + rename) after every update. Its three
-fields, one per persisted stat above:
+Setting `PG_GUARD_STATE_FILE` to a path on durable storage persists seven
+values across that restart instead:
+
+- `postgres_ha_pg_guard_starts_total` -- counts pg-guard process starts for
+  any reason, the "how many times has this node come back from scratch" stat.
+- `postgres_ha_postgres_restarts_total`,
+  `postgres_ha_postgres_last_crash_timestamp_seconds` -- see Automatic
+  Restart above.
+- `postgres_ha_backups_total`, `postgres_ha_backup_failures_total`,
+  `postgres_ha_last_backup_timestamp_seconds`,
+  `postgres_ha_last_backup_duration_seconds` -- see Backup below.
+
+Deliberately **not** persisted: the crash-restart budget itself
+(`PG_GUARD_POSTGRES_RESTART_LIMIT`/`WINDOW`) -- that enforcement stays
+in-memory and resets fresh on every pg-guard restart, unchanged; and
+backup's last-*attempt* status (`postgres_ha_backup_last_attempt_ok`, the
+attempt timestamp, and the attempt error text on `/status`) -- that's "is
+backup broken *right now*," which naturally refreshes the moment the next
+attempt runs regardless of any restart, and the error text is free-form
+enough that it doesn't belong in a plain file on disk the way a timestamp
+or count does. Unset (the default) means all of this stays exactly as
+before: in-memory only. A missing or corrupt state file is never fatal --
+pg-guard just starts every counter at 0 again.
+
+`PG_GUARD_STATE_FILE` itself is a small JSON file (`statepersist.go`),
+written atomically (temp file + rename) immediately after each value it
+holds changes -- not batched until shutdown, since a hard kill (OOM,
+`SIGKILL`) gets no graceful-shutdown hook to flush anything. Its fields,
+one per persisted stat above:
 
 ```json
 {
   "pg_guard_starts": 3,
   "postgres_restarts": 7,
-  "last_crash_unix_nano": 1785187872396067400
+  "last_crash_unix_nano": 1785187872396067400,
+  "backups_total": 12,
+  "backup_failures_total": 1,
+  "last_backup_unix_nano": 1785187900000000000,
+  "last_backup_duration_nano": 4200000000
 }
 ```
 
@@ -698,12 +724,19 @@ fields, one per persisted stat above:
 | `pg_guard_starts` | `postgres_ha_pg_guard_starts_total` |
 | `postgres_restarts` | `postgres_ha_postgres_restarts_total` |
 | `last_crash_unix_nano` | `postgres_ha_postgres_last_crash_timestamp_seconds` (nanoseconds on disk, seconds in the metric) |
+| `backups_total` | `postgres_ha_backups_total` |
+| `backup_failures_total` | `postgres_ha_backup_failures_total` |
+| `last_backup_unix_nano` | `postgres_ha_last_backup_timestamp_seconds` (nanoseconds on disk, seconds in the metric) |
+| `last_backup_duration_nano` | `postgres_ha_last_backup_duration_seconds` (nanoseconds on disk, seconds in the metric) |
 
 Not a stable API -- pg-guard's own bookkeeping, not meant to be hand-edited.
+To reset it, stop pg-guard, delete the file, and start it again -- deleting
+it while pg-guard keeps running has no effect, since the next write just
+recreates it from whatever is still in memory.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `PG_GUARD_STATS_FILE` | path to persist the three stats above across restarts; unset means in-memory only | unset |
+| `PG_GUARD_STATE_FILE` | path to persist the stats above across restarts; unset means in-memory only | unset |
 
 ## Backup
 

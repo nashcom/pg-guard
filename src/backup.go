@@ -86,6 +86,7 @@ func performBackup(cfg *Config, pool *pgxpool.Pool) (string, time.Duration, erro
 		if !errors.Is(err, errBackupInProgress) {
 			incrementBackupFailures()
 			recordBackupAttempt(err)
+			persistState(cfg)
 		}
 		return "", 0, err
 	}
@@ -93,6 +94,7 @@ func performBackup(cfg *Config, pool *pgxpool.Pool) (string, time.Duration, erro
 	recordBackupSuccess(duration)
 	recordBackupAttempt(nil)
 	incrementBackups()
+	persistState(cfg)
 
 	if cfg.BackupCommand == "" {
 		if err := pruneOldBackups(cfg); err != nil {

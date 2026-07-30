@@ -195,7 +195,7 @@ func runInteractive() {
 		logFatal("config error: %v", err)
 	}
 	dumpConfig(cfg)
-	initPersistentStats(cfg)
+	initPersistentState(cfg)
 
 	if err := initPeerHTTPClients(cfg); err != nil {
 		logFatal("TLS config error: %v", err)
@@ -261,7 +261,7 @@ func runInteractive() {
 			currentChild.Store(nil)
 			postgresRunning.Store(false)
 			recordPostgresCrash()
-			persistStats(cfg)
+			persistState(cfg)
 
 			// PostgresRestartLimit == 0 means crash-restart is disabled
 			// (see config.go) -- every crash falls straight through to the
@@ -298,7 +298,7 @@ func runInteractive() {
 			}
 
 			incrementPostgresRestarts()
-			persistStats(cfg)
+			persistState(cfg)
 			startPostgres(cfg, sup)
 			if currentChild.Load() == nil {
 				logError("crash-restart failed to bring postgres back up -- exiting")

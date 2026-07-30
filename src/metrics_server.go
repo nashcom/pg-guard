@@ -87,6 +87,7 @@ type statusResponse struct {
 	RebootSuppressRemainingSeconds    float64 `json:"reboot_suppress_remaining_seconds"` // 0 if RebootSuppressActive is false
 	TLSEnabled                        bool    `json:"tls_enabled"`                       // true once PG_GUARD_SSL_CERT_FILE/PG_GUARD_SSL_KEY_FILE are set -- the API listener and outbound peer calls serve/use TLS instead of plain HTTP; never applies to the metrics listener
 	MTLSRequired                      bool    `json:"mtls_required"`                     // PG_GUARD_MTLS_REQUIRE -- only meaningful while TLSEnabled is true
+	APITokenRequired                  bool    `json:"api_token_required"`                // PG_GUARD_API_TOKEN set -- POST /api/* requires a bearer token; the token itself is never exposed here. /metrics-only counters aside, this is deliberately status-only -- not worth a Prometheus gauge
 	MetricsMode                       string  `json:"metrics_mode"`                      // PG_GUARD_METRICS_MODE -- endpoint|textfile|both; /health|/ready|/status are always served regardless of this setting -- see Metrics section
 	TextfileDir                       string  `json:"textfile_dir,omitempty"`            // PG_GUARD_TEXTFILE_DIR -- only meaningful while MetricsMode is textfile or both
 	TextfileIntervalSeconds           float64 `json:"textfile_interval_seconds"`         // configured PG_GUARD_TEXTFILE_INTERVAL
@@ -103,7 +104,7 @@ type statusResponse struct {
 	PostgresRestartLimit              int     `json:"postgres_restart_limit"`                // configured PG_GUARD_POSTGRES_RESTART_LIMIT -- 0 means in-process crash-restart is disabled
 	PostgresRestartWindowSeconds      float64 `json:"postgres_restart_window_seconds"`       // configured PG_GUARD_POSTGRES_RESTART_WINDOW
 	LastPostgresCrashTimestampSeconds float64 `json:"last_postgres_crash_timestamp_seconds"` // unix epoch of the most recently detected unexpected postgres exit; 0 if none this run -- see Automatic Restart section
-	StatsFile                         string  `json:"stats_file,omitempty"`                  // PG_GUARD_STATS_FILE -- unset means pg_guard_starts_total/postgres_restarts_total/last_postgres_crash_timestamp_seconds are in-memory only, reset every pg-guard restart
+	StateFile                         string  `json:"state_file,omitempty"`                  // PG_GUARD_STATE_FILE -- unset means pg_guard_starts_total/postgres_restarts_total/last_postgres_crash_timestamp_seconds are in-memory only, reset every pg-guard restart
 	// postgres_restarts_total/pg_guard_starts_total are deliberately
 	// /metrics-only, same reasoning as backups_total above.
 }
@@ -132,6 +133,7 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		RebootSuppressRemainingSeconds:    rebootSuppressRemaining(),
 		TLSEnabled:                        s.cfg.TLSEnabled,
 		MTLSRequired:                      s.cfg.MTLSRequire,
+		APITokenRequired:                  s.cfg.APIToken != "",
 		MetricsMode:                       s.cfg.MetricsMode,
 		TextfileDir:                       s.cfg.TextfileDir,
 		TextfileIntervalSeconds:           s.cfg.TextfileInterval.Seconds(),
@@ -142,7 +144,7 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PostgresRestartLimit:              s.cfg.PostgresRestartLimit,
 		PostgresRestartWindowSeconds:      s.cfg.PostgresRestartWindow.Seconds(),
 		LastPostgresCrashTimestampSeconds: lastPostgresCrashTimestampSeconds(),
-		StatsFile:                         s.cfg.StatsFile,
+		StateFile:                         s.cfg.StateFile,
 	}
 	resp.LastBackupAttemptOK, resp.LastBackupAttemptError, resp.LastBackupAttemptTimestampSeconds = backupAttemptStatus()
 	if resp.MaintenanceActive {

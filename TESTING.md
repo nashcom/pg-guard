@@ -62,6 +62,10 @@ container needed. All commands below are run from `docker/`.
   volumes (lighter than `kill_all.sh`).
 - **`./generate-certs.sh`** -- generates a local micro-CA + leaf cert for
   testing with TLS enabled (see [`README.md`](README.md)'s TLS section).
+  `test_roundtrip.sh`/`switchover-loop.sh` both read `.env` and adapt
+  automatically -- TLS/mTLS and `PG_GUARD_API_TOKEN` (bearer auth) are
+  fully exercised together, not just individually, so setting both in
+  `.env` proves the real-world combination actually works end to end.
 
 ### On-demand backup
 

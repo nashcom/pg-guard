@@ -203,7 +203,7 @@ touches real disk, not even briefly; it also covers any scratch space
 `pg_basebackup`/`initdb`/`psql` use on their own when invoked via `docker
 compose exec`.
 
-`PG_GUARD_STATS_FILE` is the opposite -- it defaults to
+`PG_GUARD_STATE_FILE` is the opposite -- it defaults to
 `/var/lib/postgresql/pg-guard-state.json`, inside the `postgres-data-N`
 volume alongside `PGDATA` (same convenience-default pattern as
 `PG_GUARD_BACKUP_DIR` above), specifically so it *does* survive a restart.
