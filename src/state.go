@@ -26,6 +26,16 @@ var (
 	// instance, so it doesn't need to go through handoverRequests.
 	backupInProgress atomic.Bool
 
+	// restartPending is true while an automatic crash-restart's backoff
+	// timer is armed (main.go's childDone handling) -- currentChild is nil
+	// during that window, same as after a deliberate stop, so it alone
+	// can't tell handleHandoverRequest's "start"/"rejoin" cases apart from
+	// "pg-guard is about to restart postgres on its own." Checked by both
+	// so a manual POST /api/start or /api/rejoin can't race the pending
+	// automatic restart and launch a second postgres against the same
+	// PGDATA.
+	restartPending atomic.Bool
+
 	// maintenanceActive is persistent (unlike shutdownInProgress, which
 	// flips back to false the instant handleMaintenance's own request
 	// returns) -- set true once POST /api/maintenance succeeds, cleared

@@ -76,6 +76,16 @@ reasoning as the replication grant's IP-scoped `pg_hba.conf` rule). The
 metrics listener has no auth surface at all -- by design, not an
 oversight.
 
+## TLS
+
+Off by default (plain HTTP) -- see [`../README.md`](../README.md)'s TLS
+section for what setting `PG_GUARD_SSL_CERT_FILE`/`PG_GUARD_SSL_KEY_FILE`
+actually switches on. `./generate-certs.sh` makes a local test CA + leaf
+cert covering both node names + `localhost`, mounted at
+`/run/secrets/tls` on both nodes -- symmetric setup, identical cert on
+each. See also "Running it" below for what happens if `.env` enables TLS
+but `tls/` wasn't (re)generated.
+
 ## `postgres:18` image conventions
 
 `postgres:18` changed the image's own conventions vs. `17`: `PGDATA` moved
@@ -193,6 +203,12 @@ touches real disk, not even briefly; it also covers any scratch space
 `pg_basebackup`/`initdb`/`psql` use on their own when invoked via `docker
 compose exec`.
 
+`PG_GUARD_STATS_FILE` is the opposite -- it defaults to
+`/var/lib/postgresql/pg-guard-state.json`, inside the `postgres-data-N`
+volume alongside `PGDATA` (same convenience-default pattern as
+`PG_GUARD_BACKUP_DIR` above), specifically so it *does* survive a restart.
+See [`../README.md`](../README.md)'s Automatic Restart section.
+
 ## Running it
 
 ```bash
@@ -201,3 +217,16 @@ docker compose up -d   # trust auth by default; cp .env.example .env first to se
 ./test_roundtrip.sh        # HA round trips: promote guard, coordinated shutdown, switchover (add -f for automatic failover too)
 ./kill_all.sh         # tear down and remove both volumes for a clean re-run
 ```
+
+`docker/.env` and `docker/tls/` are both gitignored local state -- neither
+exists on a fresh clone/checkout. If `.env` sets `PG_GUARD_SSL_CERT_FILE`
+(e.g. copied over from a previous checkout) but `tls/` wasn't regenerated
+alongside it, pg-guard fails config validation at startup (`reading
+/run/secrets/tls/tls.crt: no such file or directory`) and the container
+never becomes healthy -- confirmed as a real, confusing failure mode:
+`docker compose up -d --wait` just times out, with nothing in that error
+pointing at the missing cert file (see its own log,
+`docker compose logs pg-traveler-0`). Run `./generate-certs.sh` to
+(re)create `tls/` whenever `.env` has TLS enabled and this is a fresh
+checkout; delete/comment out `PG_GUARD_SSL_CERT_FILE` in `.env` to run
+without TLS instead.

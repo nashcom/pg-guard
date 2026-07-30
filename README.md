@@ -188,6 +188,10 @@ These are read as-is -- `pg-guard` never redefines what Postgres already owns.
 | `PG_GUARD_BACKUP_COMMAND` | shell command the `pg_basebackup` tar stream is piped into instead of a directory (e.g. a `borg`/`restic`/tar+upload invocation) -- no retention, mutually exclusive with `PG_GUARD_BACKUP_DIR` | unset |
 | `PG_GUARD_BACKUP_INTERVAL` | how often the scheduler runs, when enabled | `24h` |
 | `PG_GUARD_BACKUP_RETAIN` | how many of the newest backups to keep; older ones are pruned after each successful backup (`PG_GUARD_BACKUP_DIR` mode only) | `7` |
+| `PG_GUARD_POSTGRES_RESTART_LIMIT` | max automatic in-process restarts of a crashed postgres within `PG_GUARD_POSTGRES_RESTART_WINDOW` before pg-guard gives up and exits instead; `0` disables in-process crash-restart entirely -- see Automatic Restart | `5` |
+| `PG_GUARD_POSTGRES_RESTART_WINDOW` | rolling window `PG_GUARD_POSTGRES_RESTART_LIMIT` is counted over | `10m` |
+| `PG_GUARD_POSTGRES_RESTART_BACKOFF` | fixed delay before each automatic crash-restart attempt | `5s` |
+| `PG_GUARD_STATS_FILE` | path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means in-memory only -- see Automatic Restart | unset |
 | `PG_GUARD_LOG_LEVEL` | `error`\|`warn`\|`info`\|`debug` | `info` |
 | `PG_GUARD_LOG_FORMAT` | `json` \| `text` | `json` |
 | `PG_GUARD_LOG_FILE` | log file path | unset (stderr); required in Windows Service mode, which has no console |
@@ -621,6 +625,85 @@ for the child to exit cleanly, whether during a coordinated handover's
 local stop or the plain `force`-policy path, before a forced kill.
 Protects against maintenance windows, scheduled updates, administrator
 mistakes, and rolling upgrades.
+
+## Automatic Restart
+
+**Implemented** (`main.go`, and identically in `service_windows.go` for
+native Windows Service deployments). When the supervised `postgres` process exits
+*unexpectedly* (crash, OOM kill -- anything other than pg-guard's own
+coordinated shutdown/switchover/maintenance paths above), pg-guard restarts
+it in-process rather than exiting itself. This reuses the exact same
+startup path a fresh launch takes (`startPostgres`): the bootstrap check
+no-ops (`PGDATA` is already initialized), the peer-rejoin check still runs
+(protects against the rare case where the peer was promoted during the
+down window), then `postgres` is started again.
+
+A rolling budget bounds this so a genuine crash loop (bad config, a
+corrupted data directory) doesn't spin forever:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PG_GUARD_POSTGRES_RESTART_LIMIT` | max automatic restarts allowed within `PG_GUARD_POSTGRES_RESTART_WINDOW` before giving up; `0` disables in-process crash-restart entirely | `5` |
+| `PG_GUARD_POSTGRES_RESTART_WINDOW` | rolling window the limit above is counted over | `10m` |
+| `PG_GUARD_POSTGRES_RESTART_BACKOFF` | fixed delay before each restart attempt | `5s` |
+
+Once the budget within the window is exhausted (or the limit is `0`),
+pg-guard falls back to its pre-existing behavior: it exits with the
+child's own exit code. This is deliberate, not a bug -- it hands recovery
+back to whatever's supervising pg-guard itself: Docker's
+`restart: on-failure` (both `docker-compose.yml`s already set this)
+restarts the whole container, or on a native Windows Service, an operator
+restarts the service manually (there is currently no automatic SCM
+recovery action configured -- the in-process restart above is what covers
+the common case there instead). A manual `POST /api/start` or
+`/api/rejoin` (or their CLI equivalents) issued while an automatic restart
+is pending is refused with an error rather than racing it.
+
+Metrics: `postgres_ha_postgres_restarts_total` (counter, `/metrics` only)
+and `postgres_ha_postgres_last_crash_timestamp_seconds` (gauge, unix epoch,
+0 if none this run). The same timestamp, plus the configured limit/window,
+are also on `GET /status` as `last_postgres_crash_timestamp_seconds`,
+`postgres_restart_limit`, and `postgres_restart_window_seconds`.
+
+### Persisting stats across pg-guard restarts
+
+The metrics above are in-memory, same as every other counter in this
+codebase -- they reset to 0 every time pg-guard itself restarts (container
+restart, redeploy, host reboot), not just when postgres crashes. Setting
+`PG_GUARD_STATS_FILE` to a path on durable storage persists three of them
+across that restart instead: `postgres_ha_pg_guard_starts_total` (new --
+counts pg-guard process starts for any reason, the "how many times has
+this node come back from scratch" stat), `postgres_ha_postgres_restarts_total`,
+and `postgres_ha_postgres_last_crash_timestamp_seconds`. The crash-restart
+budget itself (`PG_GUARD_POSTGRES_RESTART_LIMIT`/`WINDOW`) is deliberately
+**not** persisted -- that enforcement stays in-memory and resets fresh on
+every pg-guard restart, unchanged. Unset (the default) means all of this
+stays exactly as before: in-memory only. A missing or corrupt stats file
+is never fatal -- pg-guard just starts the counters at 0 again.
+
+`PG_GUARD_STATS_FILE` itself is a small JSON file (`statspersist.go`),
+written atomically (temp file + rename) after every update. Its three
+fields, one per persisted stat above:
+
+```json
+{
+  "pg_guard_starts": 3,
+  "postgres_restarts": 7,
+  "last_crash_unix_nano": 1785187872396067400
+}
+```
+
+| Field | Backs |
+|---|---|
+| `pg_guard_starts` | `postgres_ha_pg_guard_starts_total` |
+| `postgres_restarts` | `postgres_ha_postgres_restarts_total` |
+| `last_crash_unix_nano` | `postgres_ha_postgres_last_crash_timestamp_seconds` (nanoseconds on disk, seconds in the metric) |
+
+Not a stable API -- pg-guard's own bookkeeping, not meant to be hand-edited.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PG_GUARD_STATS_FILE` | path to persist the three stats above across restarts; unset means in-memory only | unset |
 
 ## Backup
 

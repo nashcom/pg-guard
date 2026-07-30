@@ -1,6 +1,6 @@
 // pg-guard -- metrics.go -- Prometheus text exposition, hand-rolled rather
 // than pulling in the official client library: the metric set is small and
-// static (37 gauges/counters, no histograms), matching this project's
+// static (40 gauges/counters, no histograms), matching this project's
 // minimal-dependency stance. Exactly the metrics documented in README's
 // Metrics section.
 //
@@ -55,6 +55,46 @@ var (
 func recordPromotionDuration(d time.Duration) { lastPromotionDuration.Store(int64(d)) }
 func recordRejoinDuration(d time.Duration)    { lastRejoinDuration.Store(int64(d)) }
 func recordBootstrapDuration(d time.Duration) { lastBootstrapDuration.Store(int64(d)) }
+
+// postgresRestartsCounter/lastPostgresCrashUnixNano back the crash-restart
+// metrics below -- see main.go's childDone handling, the only writer.
+// lastPostgresCrashUnixNano is set the moment a crash is *detected*
+// (before it's known whether pg-guard will restart it or give up), not
+// when a restart succeeds -- same "no automatic backup in N hours" style
+// alerting rationale as lastBackupUnixNano, just for the opposite kind of
+// event (something to alert on happening, not something failing to
+// happen).
+var (
+	postgresRestartsCounter   atomic.Int64
+	lastPostgresCrashUnixNano atomic.Int64
+)
+
+func incrementPostgresRestarts()   { postgresRestartsCounter.Add(1) }
+func postgresRestartsTotal() int64 { return postgresRestartsCounter.Load() }
+
+func recordPostgresCrash() { lastPostgresCrashUnixNano.Store(time.Now().UnixNano()) }
+
+// pgGuardStartsCounter counts pg-guard process starts (any reason: crash-
+// restart budget exhausted -> container restarted, manual restart,
+// redeploy, host reboot) -- "how many times has this node come back from
+// scratch." Only ever incremented once, at startup (see statspersist.go's
+// initPersistentStats); persisted like postgresRestartsCounter/
+// lastPostgresCrashUnixNano above when PG_GUARD_STATS_FILE is set, so it
+// keeps counting across restarts instead of resetting to 0 every time.
+var pgGuardStartsCounter atomic.Int64
+
+func incrementPgGuardStarts()   { pgGuardStartsCounter.Add(1) }
+func pgGuardStartsTotal() int64 { return pgGuardStartsCounter.Load() }
+
+// lastPostgresCrashTimestampSeconds returns the unix timestamp of the most
+// recently detected unexpected postgres exit, or 0 if none this run.
+func lastPostgresCrashTimestampSeconds() float64 {
+	ns := lastPostgresCrashUnixNano.Load()
+	if ns == 0 {
+		return 0
+	}
+	return float64(ns) / float64(time.Second)
+}
 
 func lastPromotionDurationSeconds() float64 {
 	return time.Duration(lastPromotionDuration.Load()).Seconds()
@@ -216,6 +256,9 @@ func collectMetrics(ctx context.Context, pool *pgxpool.Pool, cfg *Config) string
 	writeGauge(&b, "postgres_ha_last_promotion_duration_seconds", "How long the most recent successful pg_promote() call took; 0 if none has happened this run.", lastPromotionDurationSeconds())
 	writeGauge(&b, "postgres_ha_last_rejoin_duration_seconds", "How long the most recent successful rejoin (pg_rewind or pg_basebackup fallback) took; 0 if none has happened this run.", lastRejoinDurationSeconds())
 	writeGauge(&b, "postgres_ha_last_bootstrap_duration_seconds", "How long the most recent first-run bootstrap took; 0 if this node didn't bootstrap this run (already-initialized PGDATA).", lastBootstrapDurationSeconds())
+	writeCounter(&b, "postgres_ha_postgres_restarts_total", "Automatic in-process restarts of postgres after an unexpected exit (see PG_GUARD_POSTGRES_RESTART_LIMIT). Does not include deliberate stop/start via the API.", float64(postgresRestartsTotal()))
+	writeCounter(&b, "postgres_ha_pg_guard_starts_total", "How many times this pg-guard process itself has started (any reason -- container restart, redeploy, host reboot). Persisted across restarts when PG_GUARD_STATS_FILE is set; otherwise always 1, since nothing carries it forward.", float64(pgGuardStartsTotal()))
+	writeGauge(&b, "postgres_ha_postgres_last_crash_timestamp_seconds", "Unix timestamp of the most recently detected unexpected postgres exit; 0 if none this run.", lastPostgresCrashTimestampSeconds())
 	writeGauge(&b, "postgres_ha_backup_enabled", "Whether PG_GUARD_BACKUP_ENABLED is true -- the periodic backup scheduler is running.", boolToFloat(cfg.BackupEnabled))
 	writeGauge(&b, "postgres_ha_backup_in_progress", "Whether a backup (scheduled or on-demand) is currently running.", boolToFloat(backupInProgress.Load()))
 	writeCounter(&b, "postgres_ha_backups_total", "Successful backups (scheduled or on-demand via POST /api/backup).", float64(backupsTotal()))

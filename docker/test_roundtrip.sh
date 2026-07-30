@@ -283,7 +283,18 @@ info "Starting a fresh stack and waiting for both nodes to report healthy (pg_is
 if run_docker compose up -d --wait --wait-timeout 200; then
   pass "Both containers report healthy"
 else
-  fail "Stack did not become healthy within 200s (see docker compose ps / logs)"
+  # Bail out immediately here, matching hatest.sh's identical "Clean start"
+  # step -- without this, every check from here on (roles, promote guard,
+  # switchover, failover) runs against containers that never came up,
+  # producing a wall of confusing, unrelated-looking failures ("Pg-traveler-0
+  # is not primary") instead of pointing at the actual root cause. See
+  # docker compose ps / logs for why the containers didn't become healthy
+  # (a common one: docker/.env and docker/tls/ are both gitignored --
+  # PG_GUARD_SSL_CERT_FILE set in .env without the matching tls/ files
+  # present, e.g. after a fresh clone, makes pg-guard fail config
+  # validation and never start postgres at all).
+  fail "Stack did not become healthy within 200s -- containers failed to start (see docker compose ps / logs)"
+  exit 1
 fi
 
 echo

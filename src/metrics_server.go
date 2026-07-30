@@ -100,6 +100,12 @@ type statusResponse struct {
 	// backups_total/backup_failures_total are deliberately /metrics-only
 	// (like promotions_total/rejoins_total) -- /status reports current
 	// state, not cumulative counters.
+	PostgresRestartLimit              int     `json:"postgres_restart_limit"`                // configured PG_GUARD_POSTGRES_RESTART_LIMIT -- 0 means in-process crash-restart is disabled
+	PostgresRestartWindowSeconds      float64 `json:"postgres_restart_window_seconds"`       // configured PG_GUARD_POSTGRES_RESTART_WINDOW
+	LastPostgresCrashTimestampSeconds float64 `json:"last_postgres_crash_timestamp_seconds"` // unix epoch of the most recently detected unexpected postgres exit; 0 if none this run -- see Automatic Restart section
+	StatsFile                         string  `json:"stats_file,omitempty"`                  // PG_GUARD_STATS_FILE -- unset means pg_guard_starts_total/postgres_restarts_total/last_postgres_crash_timestamp_seconds are in-memory only, reset every pg-guard restart
+	// postgres_restarts_total/pg_guard_starts_total are deliberately
+	// /metrics-only, same reasoning as backups_total above.
 }
 
 func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +139,10 @@ func (s *apiServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		BackupInProgress:                  backupInProgress.Load(),
 		LastBackupTimestampSeconds:        lastBackupTimestampSeconds(),
 		LastBackupDurationSeconds:         lastBackupDurationSeconds(),
+		PostgresRestartLimit:              s.cfg.PostgresRestartLimit,
+		PostgresRestartWindowSeconds:      s.cfg.PostgresRestartWindow.Seconds(),
+		LastPostgresCrashTimestampSeconds: lastPostgresCrashTimestampSeconds(),
+		StatsFile:                         s.cfg.StatsFile,
 	}
 	resp.LastBackupAttemptOK, resp.LastBackupAttemptError, resp.LastBackupAttemptTimestampSeconds = backupAttemptStatus()
 	if resp.MaintenanceActive {

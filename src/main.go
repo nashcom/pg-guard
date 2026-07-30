@@ -195,6 +195,7 @@ func runInteractive() {
 		logFatal("config error: %v", err)
 	}
 	dumpConfig(cfg)
+	initPersistentStats(cfg)
 
 	if err := initPeerHTTPClients(cfg); err != nil {
 		logFatal("TLS config error: %v", err)
@@ -233,6 +234,13 @@ func runInteractive() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	// restartAt is non-nil only while a crash-restart backoff is pending --
+	// same nil-channel-in-select pattern as childDone below (a nil channel
+	// blocks forever, so the case simply never fires until armed). Using a
+	// timer here instead of time.Sleep keeps the loop responsive to a
+	// concurrent SIGTERM/handover request during the backoff window.
+	var restartAt <-chan time.Time
+
 	for {
 		cw := currentChild.Load()
 		var childDone <-chan struct{}
@@ -252,8 +260,51 @@ func runInteractive() {
 			logWarn("child exited unexpectedly (code %d)", code)
 			currentChild.Store(nil)
 			postgresRunning.Store(false)
-			stopServers(apiSrv, metricsSrv, pool)
-			os.Exit(code)
+			recordPostgresCrash()
+			persistStats(cfg)
+
+			// PostgresRestartLimit == 0 means crash-restart is disabled
+			// (see config.go) -- every crash falls straight through to the
+			// exact pre-existing behavior below. Otherwise,
+			// recordCrashAndCheckLimit reports whether this crash is still
+			// within budget; once it isn't (a genuine crash loop -- bad
+			// config, corrupt data dir, etc.), fall back to the same exit
+			// behavior so Docker's restart:on-failure / an operator
+			// restarting the Windows Service remains the final safety net.
+			if cfg.PostgresRestartLimit == 0 || !recordCrashAndCheckLimit(cfg) {
+				logError("postgres crash-restart budget exhausted (or PG_GUARD_POSTGRES_RESTART_LIMIT=0) -- exiting instead of restarting")
+				stopServers(apiSrv, metricsSrv, pool)
+				os.Exit(code)
+			}
+
+			logWarn("restarting postgres in %s (crash-restart)", cfg.PostgresRestartBackoff)
+			restartPending.Store(true)
+			restartAt = time.After(cfg.PostgresRestartBackoff)
+
+		case <-restartAt:
+			restartAt = nil
+			restartPending.Store(false)
+
+			// currentChild may already be non-nil here if a manual POST
+			// /api/start or /api/rejoin raced the backoff and won --
+			// restartPending being true while it ran should have made both
+			// handlers refuse (handleHandoverRequest below), but this
+			// double-check costs nothing and avoids ever starting a second
+			// postgres against the same PGDATA if that guard is ever
+			// bypassed some other way.
+			if currentChild.Load() != nil {
+				logInfo("postgres already running -- skipping crash-restart")
+				break
+			}
+
+			incrementPostgresRestarts()
+			persistStats(cfg)
+			startPostgres(cfg, sup)
+			if currentChild.Load() == nil {
+				logError("crash-restart failed to bring postgres back up -- exiting")
+				stopServers(apiSrv, metricsSrv, pool)
+				os.Exit(1)
+			}
 
 		case req := <-handoverRequests:
 			handleHandoverRequest(sup, cfg, pool, req)
@@ -263,6 +314,31 @@ func runInteractive() {
 			os.Exit(code)
 		}
 	}
+}
+
+// crashTimestamps records each detected unexpected postgres exit within the
+// current PG_GUARD_POSTGRES_RESTART_WINDOW -- like currentChild/etc.
+// (state.go), only ever touched from the single main-loop goroutine, so no
+// locking is needed here either.
+var crashTimestamps []time.Time
+
+// recordCrashAndCheckLimit appends now to crashTimestamps, prunes entries
+// older than cfg.PostgresRestartWindow, and reports whether the number of
+// crashes still within that window is within cfg.PostgresRestartLimit --
+// false tells the caller to give up restarting and exit instead.
+func recordCrashAndCheckLimit(cfg *Config) bool {
+	now := time.Now()
+	cutoff := now.Add(-cfg.PostgresRestartWindow)
+
+	kept := crashTimestamps[:0]
+	for _, t := range crashTimestamps {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	crashTimestamps = append(kept, now)
+
+	return len(crashTimestamps) <= cfg.PostgresRestartLimit
 }
 
 // alreadyConfiguredAsStandby reports whether local PGDATA is already set up
@@ -432,6 +508,10 @@ func handleHandoverRequest(sup *supervisor, cfg *Config, pool *pgxpool.Pool, req
 		req.result <- nil
 
 	case "rejoin":
+		if restartPending.Load() {
+			req.result <- fmt.Errorf("a crash-restart is currently pending -- wait for it to complete first")
+			return
+		}
 		if currentChild.Load() != nil {
 			req.result <- fmt.Errorf("postgres is currently running -- stop it first")
 			return
@@ -449,6 +529,10 @@ func handleHandoverRequest(sup *supervisor, cfg *Config, pool *pgxpool.Pool, req
 		req.result <- nil
 
 	case "start":
+		if restartPending.Load() {
+			req.result <- fmt.Errorf("a crash-restart is currently pending -- wait for it to complete first")
+			return
+		}
 		if currentChild.Load() != nil {
 			req.result <- fmt.Errorf("postgres is already running")
 			return

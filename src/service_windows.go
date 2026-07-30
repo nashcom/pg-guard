@@ -70,6 +70,7 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 	}
 
 	startReaper()
+	initPersistentStats(m.cfg)
 	sup := newSupervisor(m.cfg)
 
 	// See runInteractive's (main.go) matching comment: the metrics/API
@@ -85,6 +86,12 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 	startFailoverMonitor(m.cfg, pool)
 
 	status <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPreShutdown}
+
+	// restartAt mirrors main.go's runInteractive exactly -- see its own
+	// comment for why a timer-in-select is used instead of time.Sleep
+	// (keeps this loop responsive to a concurrent SCM Stop/Shutdown during
+	// the backoff window).
+	var restartAt <-chan time.Time
 
 	for {
 		cw := currentChild.Load()
@@ -112,9 +119,41 @@ func (m *pgGuardService) Execute(args []string, req <-chan svc.ChangeRequest, st
 			logWarn("child exited unexpectedly (code %d)", code)
 			currentChild.Store(nil)
 			postgresRunning.Store(false)
-			stopServers(apiSrv, metricsSrv, pool)
-			status <- svc.Status{State: svc.Stopped}
-			return false, uint32(code)
+			recordPostgresCrash()
+			persistStats(m.cfg)
+
+			// Same crash-restart budget as main.go's runInteractive --
+			// recordCrashAndCheckLimit is defined in main.go with no build
+			// tag, so it's shared, not duplicated.
+			if m.cfg.PostgresRestartLimit == 0 || !recordCrashAndCheckLimit(m.cfg) {
+				logError("postgres crash-restart budget exhausted (or PG_GUARD_POSTGRES_RESTART_LIMIT=0) -- exiting instead of restarting")
+				stopServers(apiSrv, metricsSrv, pool)
+				status <- svc.Status{State: svc.Stopped}
+				return false, uint32(code)
+			}
+
+			logWarn("restarting postgres in %s (crash-restart)", m.cfg.PostgresRestartBackoff)
+			restartPending.Store(true)
+			restartAt = time.After(m.cfg.PostgresRestartBackoff)
+
+		case <-restartAt:
+			restartAt = nil
+			restartPending.Store(false)
+
+			if currentChild.Load() != nil {
+				logInfo("postgres already running -- skipping crash-restart")
+				break
+			}
+
+			incrementPostgresRestarts()
+			persistStats(m.cfg)
+			startPostgres(m.cfg, sup)
+			if currentChild.Load() == nil {
+				logError("crash-restart failed to bring postgres back up -- exiting")
+				stopServers(apiSrv, metricsSrv, pool)
+				status <- svc.Status{State: svc.Stopped}
+				return false, 1
+			}
 
 		case hreq := <-handoverRequests:
 			handleHandoverRequest(sup, m.cfg, pool, hreq)

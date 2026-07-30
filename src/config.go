@@ -112,6 +112,22 @@ type Config struct {
 	BackupCommand  string        // PG_GUARD_BACKUP_COMMAND -- shell command pg_basebackup's tar stream is piped into instead (e.g. a borgbackup/restic/tar+upload invocation); no retention, pg-guard has no visibility into where the data ends up
 	BackupInterval time.Duration // PG_GUARD_BACKUP_INTERVAL
 	BackupRetain   int           // PG_GUARD_BACKUP_RETAIN -- keep this many newest backups, prune the rest (BackupDir mode only)
+
+	// Crash-restart (unexpected postgres exit, see main.go's childDone
+	// handling). PostgresRestartLimit is how many automatic restarts are
+	// allowed within PostgresRestartWindow before pg-guard gives up and
+	// exits (today's pre-this-feature behavior, letting Docker/the OS
+	// handle recovery instead) -- 0 disables in-process crash-restart
+	// entirely, one setting rather than a separate enable/disable bool.
+	PostgresRestartLimit   int           // PG_GUARD_POSTGRES_RESTART_LIMIT
+	PostgresRestartWindow  time.Duration // PG_GUARD_POSTGRES_RESTART_WINDOW
+	PostgresRestartBackoff time.Duration // PG_GUARD_POSTGRES_RESTART_BACKOFF
+
+	// StatsFile, if set, persists pg-guard start count / postgres restart
+	// count / last crash timestamp across pg-guard restarts (see
+	// statspersist.go) -- unset (the default) means those stay in-memory
+	// only, same as every other counter in this codebase.
+	StatsFile string // PG_GUARD_STATS_FILE
 }
 
 // varDef documents one environment variable: its name, default value, and
@@ -163,6 +179,10 @@ var varDefs = []varDef{
 	{"PG_GUARD_BACKUP_COMMAND", "(unset)", "shell command to pipe the pg_basebackup tar stream into instead of a directory (e.g. a borgbackup/restic/tar+upload invocation) -- no retention, mutually exclusive with PG_GUARD_BACKUP_DIR"},
 	{"PG_GUARD_BACKUP_INTERVAL", "24h", "how often the backup scheduler runs, when PG_GUARD_BACKUP_ENABLED=true"},
 	{"PG_GUARD_BACKUP_RETAIN", "7", "how many of the newest backups to keep; older ones are pruned after each successful backup (PG_GUARD_BACKUP_DIR mode only)"},
+	{"PG_GUARD_POSTGRES_RESTART_LIMIT", "5", "max automatic in-process restarts of a crashed postgres within PG_GUARD_POSTGRES_RESTART_WINDOW before pg-guard gives up and exits instead (letting Docker/the OS handle recovery); 0 disables in-process crash-restart entirely -- see Automatic Restart"},
+	{"PG_GUARD_POSTGRES_RESTART_WINDOW", "10m", "rolling window PG_GUARD_POSTGRES_RESTART_LIMIT is counted over"},
+	{"PG_GUARD_POSTGRES_RESTART_BACKOFF", "5s", "fixed delay before each automatic crash-restart attempt"},
+	{"PG_GUARD_STATS_FILE", "(unset)", "path to persist pg-guard start count / postgres restart count / last crash timestamp across pg-guard restarts; unset means these stay in-memory only -- see Automatic Restart"},
 }
 
 // envOrDefault returns the environment variable value or a default.
@@ -464,6 +484,27 @@ func loadConfig() (*Config, error) {
 	if cfg.BackupRetain < 1 {
 		return nil, fmt.Errorf("PG_GUARD_BACKUP_RETAIN must be at least 1")
 	}
+
+	if cfg.PostgresRestartLimit, err = envInt("PG_GUARD_POSTGRES_RESTART_LIMIT", 5); err != nil {
+		return nil, err
+	}
+	if cfg.PostgresRestartLimit < 0 {
+		return nil, fmt.Errorf("PG_GUARD_POSTGRES_RESTART_LIMIT must be 0 or greater")
+	}
+	if cfg.PostgresRestartWindow, err = envDuration("PG_GUARD_POSTGRES_RESTART_WINDOW", 10*time.Minute); err != nil {
+		return nil, err
+	}
+	if cfg.PostgresRestartWindow <= 0 {
+		return nil, fmt.Errorf("PG_GUARD_POSTGRES_RESTART_WINDOW must be a positive duration")
+	}
+	if cfg.PostgresRestartBackoff, err = envDuration("PG_GUARD_POSTGRES_RESTART_BACKOFF", 5*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.PostgresRestartBackoff < 0 {
+		return nil, fmt.Errorf("PG_GUARD_POSTGRES_RESTART_BACKOFF must be 0 or greater")
+	}
+
+	cfg.StatsFile = os.Getenv("PG_GUARD_STATS_FILE")
 
 	return cfg, nil
 }
